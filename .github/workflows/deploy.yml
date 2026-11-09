@@ -1,0 +1,91 @@
+name: Deploy
+
+# main deploys to staging after CI passes. Production is deployed by hand from the Actions tab;
+# the "production" GitHub environment should require an approval.
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Environment to deploy
+        type: choice
+        options: [staging, production]
+        default: staging
+
+concurrency:
+  group: deploy-${{ inputs.environment || 'staging' }}
+  cancel-in-progress: false
+
+permissions:
+  id-token: write # AWS OIDC
+  contents: read
+
+jobs:
+  deploy:
+    # Opt-in: set the repository variable DEPLOY_ENABLED=true once the AWS side is bootstrapped.
+    if: >-
+      vars.DEPLOY_ENABLED == 'true' &&
+      (github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success')
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment || 'staging' }}
+    env:
+      ENVIRONMENT: ${{ inputs.environment || 'staging' }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_wrapper: false
+
+      - name: Terraform apply
+        working-directory: infra/terraform/environments/${{ env.ENVIRONMENT }}
+        env:
+          TF_VAR_github_app_slug: ${{ vars.APP_SLUG }}
+          TF_VAR_alarm_email: ${{ vars.ALARM_EMAIL }}
+          TF_VAR_aws_region: ${{ vars.AWS_REGION }}
+        run: |
+          terraform init -input=false \
+            -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}" \
+            -backend-config="key=reviewbot/${ENVIRONMENT}.tfstate" \
+            -backend-config="region=${{ vars.AWS_REGION }}" \
+            -backend-config="use_lockfile=true"
+          terraform apply -input=false -auto-approve
+          terraform output -json > "$RUNNER_TEMP/outputs.json"
+
+      - name: Upload dashboard
+        run: |
+          bucket=$(jq -r .dashboard_bucket.value "$RUNNER_TEMP/outputs.json")
+          dist=$(jq -r .cloudfront_distribution_id.value "$RUNNER_TEMP/outputs.json")
+          # Hashed assets can be cached forever; index.html must always be fresh.
+          aws s3 sync apps/dashboard/dist "s3://$bucket" --delete --exclude index.html \
+            --cache-control "public,max-age=31536000,immutable"
+          aws s3 cp apps/dashboard/dist/index.html "s3://$bucket/index.html" --cache-control "no-cache"
+          aws cloudfront create-invalidation --distribution-id "$dist" --paths "/index.html" > /dev/null
+
+      - name: Smoke test
+        run: |
+          url=$(jq -r .dashboard_url.value "$RUNNER_TEMP/outputs.json")
+          # Signed-out requests must reach the API Lambda and be refused.
+          code=$(curl -s -o /dev/null -w '%{http_code}' --retry 5 --retry-delay 5 "$url/api/me")
+          if [ "$code" != "401" ]; then echo "::error::Expected 401 from $url/api/me, got $code"; exit 1; fi
+          echo "Deployed $ENVIRONMENT: $url" >> "$GITHUB_STEP_SUMMARY"
