@@ -1,0 +1,7 @@
+# DynamoDB Local for development and integration tests: `docker compose up -d`
+services:
+  dynamodb:
+    image: amazon/dynamodb-local:latest
+    command: ["-jar", "DynamoDBLocal.jar", "-inMemory", "-sharedDb"]
+    ports:
+      - "8000:8000"
