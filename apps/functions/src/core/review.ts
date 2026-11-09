@@ -23,6 +23,8 @@ export interface ReviewDeps {
   maxChunkChars?: number;
   /** How many chunks to send to the model at once. */
   concurrency?: number;
+  /** Review merged/closed PRs too. Only the CLI uses this, to try the bot on past PRs. */
+  includeClosed?: boolean;
   now?: () => Date;
   log?: (msg: string, data?: object) => void;
 }
@@ -62,7 +64,7 @@ export async function reviewPullRequest(deps: ReviewDeps, job: ReviewJob): Promi
     const pr = await deps.github.getPullRequest(job.owner, job.repo, job.prNumber);
     base.prTitle = pr.title;
 
-    if (pr.state !== "open") return await finish({ status: "SKIPPED", note: "pull request is closed" });
+    if (pr.state !== "open" && !deps.includeClosed) return await finish({ status: "SKIPPED", note: "pull request is closed" });
     if (pr.draft && settings.skipDrafts) return await finish({ status: "SKIPPED", note: "draft pull request" });
     // A newer push arrived while this job waited in the queue; that push has its own job.
     if (pr.headSha !== job.headSha) return await finish({ status: "SKIPPED", note: "superseded by a newer commit" });
