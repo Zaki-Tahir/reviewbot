@@ -15,3 +15,6 @@ coverage/
 *.tfvars
 !*.tfvars.example
 *.zip
+
+# terraform build artifacts
+.build/
