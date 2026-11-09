@@ -1,0 +1,21 @@
+# Settings for the ReviewBot GitHub App (Settings -> Developer settings -> GitHub Apps -> New).
+# Create one app per environment (e.g. "reviewbot-staging" and "reviewbot").
+
+name: ReviewBot
+description: AI code review on every pull request
+
+# From `terraform output` in infra/terraform/environments/<env>
+webhook_url: <webhook_url output>
+callback_url: <oauth_callback_url output>
+# Lets the dashboard ask GitHub which installations and repos the signed-in user can see
+request_oauth_on_install: false
+expire_user_tokens: true
+
+# Keep these minimal: the bot reads code and writes review comments, nothing else.
+permissions:
+  contents: read # read changed files
+  pull_requests: write # read PRs and post reviews
+  metadata: read # required by GitHub
+
+events:
+  - pull_request
